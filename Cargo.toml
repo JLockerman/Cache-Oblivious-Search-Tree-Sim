@@ -1,0 +1,10 @@
+[package]
+name = "cobt2"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+arrayvec = "0.7.6"
+clap = { version = "4.5.45", features = ["derive"] }
+proptest = { version = "1.7.0", features = ["attr-macro"] }
+sim =  { path = "/Users/joshlockerman/Desktop/rust/duplo/sim/" }
