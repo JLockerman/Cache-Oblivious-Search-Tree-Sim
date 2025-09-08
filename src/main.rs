@@ -2,6 +2,9 @@ use clap::{Parser, ValueEnum};
 use sim::simalloc::{self, Simalloc};
 use std::{cell::RefCell, str::FromStr};
 
+use rand::{SeedableRng, prelude::*};
+use rand_pcg::Pcg64Mcg;
+
 mod btree;
 #[cfg(test)]
 mod parse_tests;
@@ -18,10 +21,13 @@ fn main() {
         order,
     } = Args::parse();
 
+    let rng = Pcg64Mcg::from_rng(&mut rand::rng());
     let values = || -> Box<dyn Iterator<Item = u64>> {
         match order {
             TestOrder::Asc => Box::new((0..num_values).map(|v| v as u64)),
-            TestOrder::Rng => todo!(),
+            TestOrder::Rng => {
+                Box::new(rng.clone().random_iter().take(num_values))
+            }
         }
     };
 
@@ -220,3 +226,15 @@ impl Args {
         &self.caches.specs
     }
 }
+
+// trait Values: Iterator<Item = u64> {
+//     fn duplicate(&self) -> Box<dyn Values>;
+// }
+// impl<T> Values for T
+// where
+//     T: 'static + Clone + Iterator<Item = u64>,
+// {
+//     fn duplicate(&self) -> Box<dyn Values> {
+//         Box::new(self.clone())
+//     }
+// }
