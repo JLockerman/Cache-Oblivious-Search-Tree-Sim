@@ -34,6 +34,7 @@ fn main() {
     let cache_spec = caches.specs.iter().map(|s| simalloc::CacheSpec {
         num_blocks: s.num_lines,
         block_size: s.line_size,
+        inclusive: false,
     });
 
     let print_stats = |sim: &RefCell<Simalloc>| {
