@@ -2,11 +2,79 @@ use std::{cell::RefCell, fmt::Debug, mem::MaybeUninit, rc::Rc};
 
 use crate::veb;
 
-use sim::simalloc::{SBox, SSlice, SSliceMut, Simalloc};
+// use rand::{RngCore, SeedableRng};
+// use rand_pcg::Pcg64Mcg;
+use sim::{
+    lru_cache::Cache,
+    simalloc::{SBox, SSlice, SSliceMut, Simalloc},
+};
 
 pub struct Tree<K> {
     tree: SBox<[Option<(usize, K)>]>,
     scratch: SBox<[MaybeUninit<K>]>,
+}
+
+pub fn sim_get<T>(
+    base_addr: usize,
+    // center around lg(n) for an even hit rate
+    mut num_elements_until_match: usize,
+    num_elements: usize,
+    sim: &mut sim::hierarchy::Hierarchy,
+    global_rng: &mut impl rand::Rng,
+) -> Option<usize> {
+    let mut ancestors = [0; 64];
+    // match self.index(&mut ancestors, value) {
+    //     Err(_) => return None,
+    //     Ok((i, _)) => self.tree.pin_at(i).as_ref().map(|(_, v)| v),
+    // }
+    use std::cmp::Ordering::*;
+
+    // let num_elements = self.tree.slice(..).len();
+    // let table = self.table();
+    let table = table(num_elements);
+
+    let mut pos = 0;
+    let mut bfs_pos = 1;
+    let mut depth = 0;
+    while pos < num_elements {
+        // let Some((_, pivot)) = self.tree.pin_at(pos).as_ref() else {
+        //     return Err((pos, depth, bfs_pos));
+        // };
+        sim.access_addr(
+            base_addr + pos * size_of::<Option<T>>(),
+            size_of::<Option<T>>(),
+        );
+        // let mut node_rng =
+        //     Pcg64Mcg::seed_from_u64((base_addr + pos * size_of::<Option<T>>()) as u64);
+        // 50% fill rate
+        // if pos > num_elements / 2 && global_rng.next_u32() % 2 == 0 {
+        //     return None
+        // }
+
+        let cmp = if num_elements_until_match == 0 {
+            Equal
+        } else if global_rng.next_u32() % 2 == 1 {
+            Greater
+        } else {
+            Less
+        };
+        num_elements_until_match = num_elements_until_match.saturating_sub(1);
+        // bfs_pos = match value.cmp(pivot) {
+        bfs_pos = match cmp {
+            // Equal => return Ok((pos, depth)),
+            Equal => return Some(pos),
+            Less => 2 * bfs_pos,
+            Greater => 2 * bfs_pos + 1,
+        };
+        depth += 1;
+        pos = match veb_index(bfs_pos, &mut ancestors, depth, table) {
+            Some(p) => p,
+            None => break,
+        };
+        ancestors[depth as usize] = pos;
+    }
+    // println!("{neum} {depth}");
+    None
 }
 
 impl<K: Debug> Debug for Tree<K> {
@@ -23,6 +91,12 @@ impl<K: Debug + Ord> Tree<K> {
         }
     }
 
+    #[allow(dead_code)]
+    pub fn cap(&self) -> usize {
+        self.tree.slice(..).len()
+    }
+
+    #[allow(dead_code)]
     pub fn get(&self, value: &K) -> Option<&K> {
         let mut ancestors = [0; 64];
         match self.index(&mut ancestors, value) {
@@ -230,7 +304,7 @@ fn table(num_elements: usize) -> &'static [veb::TreeInfo] {
 fn extract<'s, K: Debug + Ord>(
     table: &[veb::TreeInfo],
     tree: SSliceMut<'_, Option<(usize, K)>>,
-    mut scratch: SSliceMut<'s, MaybeUninit<K>>,
+    scratch: SSliceMut<'s, MaybeUninit<K>>,
     ancestors: &mut [usize; 64],
     depth: u32,
     bfs_pos: usize,

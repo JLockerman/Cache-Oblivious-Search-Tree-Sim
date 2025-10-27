@@ -2,6 +2,7 @@ use std::{fmt::Debug, mem::MaybeUninit};
 
 pub(crate) mod constants;
 
+#[allow(dead_code)]
 pub fn make_veb_in<K: Clone + Debug>(elements: &[K], out: &mut [Option<K>]) {
   fn layout<K: Clone + Debug>(
     table: &[TreeInfo],
@@ -77,6 +78,7 @@ pub fn make_veb_in<K: Clone + Debug>(elements: &[K], out: &mut [Option<K>]) {
   );
 }
 
+#[allow(dead_code)]
 pub fn make_veb<K: Debug>(mut elements: Vec<K>) -> Vec<Option<K>> {
   fn layout<K: Debug>(
     table: &[TreeInfo],
@@ -161,6 +163,7 @@ pub fn make_veb<K: Debug>(mut elements: Vec<K>) -> Vec<Option<K>> {
   output
 }
 
+#[allow(dead_code)]
 pub fn search<K: Ord>(veb_tree: &[Option<K>], value: &K) -> Option<usize> {
   use std::cmp::Ordering::*;
 

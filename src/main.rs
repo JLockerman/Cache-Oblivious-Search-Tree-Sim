@@ -1,6 +1,9 @@
-use clap::{Parser, ValueEnum};
-use sim::simalloc::{self, Simalloc};
-use std::{cell::RefCell, str::FromStr};
+use clap::{Parser, Subcommand, ValueEnum};
+use sim::{
+    hierarchy::Hierarchy,
+    simalloc::{self, Simalloc},
+};
+use std::str::FromStr;
 
 use rand::{SeedableRng, prelude::*};
 use rand_pcg::Pcg64Mcg;
@@ -10,102 +13,352 @@ mod btree;
 mod parse_tests;
 mod trees_of_small_height;
 mod veb;
+// mod hierarchical;
 
 fn main() {
-    use TestSpec::*;
+    let Args { test } = Args::parse();
 
-    let Args {
-        caches,
-        test,
-        num_values,
-        order,
-    } = Args::parse();
+    match test {
+        Test::Get {
+            caches,
+            datastructure,
+            num_values,
+            interleaving,
+        } => {
+            let cache_spec = caches.specs.iter().map(|s| simalloc::CacheSpec {
+                num_blocks: s.num_lines,
+                block_size: s.line_size,
+                inclusive: true,
+            });
+            get_test(datastructure, num_values, interleaving, cache_spec)
+        }
+        Test::Write {
+            caches,
+            datastructure,
+            num_values,
+            order,
+            interleaving,
+        } => {
+            let rng = Pcg64Mcg::from_os_rng();
+            let values = || -> Box<dyn Iterator<Item = u64>> {
+                match order {
+                    TestOrder::Asc => {
+                        println!("ASC");
+                        Box::new((0..num_values).map(|v| v as u64))
+                    }
+                    TestOrder::Rng => {
+                        println!("RNG");
+                        Box::new(rng.clone().random_iter().take(num_values))
+                    }
+                }
+            };
+            let cache_spec = caches.specs.iter().map(|s| simalloc::CacheSpec {
+                num_blocks: s.num_lines,
+                block_size: s.line_size,
+                inclusive: true,
+            });
+            insert_test(datastructure, num_values, interleaving, values, cache_spec, false)
+        }
+        Test::WR {
+            caches,
+            datastructure,
+            num_values,
+            order,
+            interleaving,
+        } => {
+            let rng = Pcg64Mcg::from_os_rng();
+            let values = || -> Box<dyn Iterator<Item = u64>> {
+                match order {
+                    TestOrder::Asc => {
+                        println!("ASC");
+                        Box::new((0..num_values).map(|v| v as u64))
+                    }
+                    TestOrder::Rng => {
+                        println!("RNG");
+                        Box::new(rng.clone().random_iter().take(num_values))
+                    }
+                }
+            };
+            let cache_spec = caches.specs.iter().map(|s| simalloc::CacheSpec {
+                num_blocks: s.num_lines,
+                block_size: s.line_size,
+                inclusive: true,
+            });
+            insert_test(datastructure, num_values, interleaving, values, cache_spec, true)
+        }
+    }
+}
 
-    let rng = Pcg64Mcg::from_rng(&mut rand::rng());
-    let values = || -> Box<dyn Iterator<Item = u64>> {
-        match order {
-            TestOrder::Asc => Box::new((0..num_values).map(|v| v as u64)),
-            TestOrder::Rng => {
-                Box::new(rng.clone().random_iter().take(num_values))
+fn get_test(
+    datastructure: TreeSpec,
+    num_values: usize,
+    interleaving: Option<usize>,
+    cache_spec: impl Iterator<Item = simalloc::CacheSpec> + Clone,
+) {
+    use TreeSpec::*;
+
+    // ≈1 trillion element dataset size
+    let set_size = 1usize << 40;
+    let average_found_search_length = set_size.ilog2();
+
+    let element_rng = Pcg64Mcg::from_os_rng();
+    let tree_rng = Pcg64Mcg::from_os_rng();
+
+    let num_trees = interleaving.unwrap_or(1);
+    if let VEB | All = datastructure {
+        println!("VEB");
+        let mut hier = Hierarchy::new(cache_spec.clone());
+        let mut element_rng = element_rng.clone();
+        let mut tree_rng = tree_rng.clone();
+        let tree_size = if set_size.is_power_of_two() {
+            (set_size + 1).next_power_of_two()
+        } else {
+            set_size.next_power_of_two()
+        } - 1;
+        let tree_bytes = set_size * size_of::<Option<u64>>();
+        let roots: Vec<_> = (0..num_trees)
+            .map(|_| {
+                tree_rng.random_range(0..1 << (64 - 1 - tree_bytes.ilog2())) << tree_bytes.ilog2()
+            })
+            .collect();
+        let mut hits = 0;
+        for _ in 0..num_values {
+            for &base_addr in &roots {
+                let num_elements_until_match =
+                    element_rng.random_range(0..2 * average_found_search_length) as usize;
+                let hit = trees_of_small_height::sim_get::<u64>(
+                    base_addr,
+                    num_elements_until_match,
+                    tree_size,
+                    &mut hier,
+                    &mut tree_rng,
+                );
+                hits += hit.is_some() as usize;
             }
         }
-    };
+        print_stats(num_values * num_trees, Some(hits), hier.stats());
+    }
 
-    let cache_spec = caches.specs.iter().map(|s| simalloc::CacheSpec {
-        num_blocks: s.num_lines,
-        block_size: s.line_size,
-        inclusive: false,
-    });
+    if let BTree4k | All = datastructure {
+        println!("B-Tree");
+        let mut hier = Hierarchy::new(cache_spec.clone());
+        let mut element_rng = element_rng.clone();
+        let mut tree_rng = tree_rng.clone();
+        let node_size = 1 << 12;
+        let node_cap = btree::num_elements_for_node_size::<u64>(node_size);
+        let roots: Vec<_> = (0..num_trees)
+            .map(|_| {
+                tree_rng.random_range(0..1 << (64 - 1 - node_size.ilog2())) << node_size.ilog2()
+            })
+            .collect();
 
-    let print_stats = |sim: &RefCell<Simalloc>| {
-        for (i, stat) in sim.borrow().stats().enumerate() {
-            println!("L{i}:");
-            println!("   {:>9} accesses", stat.accesses);
-            println!("   {:>9} hits ", stat.hits);
-            println!("   {:>9} misses ", stat.accesses - stat.hits);
-            println!(
-                "  {:>9.2}% hit rate ",
-                ((stat.hits as f64 / stat.accesses as f64) * 100.0)
-            );
-            println!(
-                "   {:>9.3} accesses / write",
-                stat.accesses as f64 / num_values as f64
-            );
-            println!(
-                "   {:>9.3} hits / write ",
-                stat.hits as f64 / num_values as f64
-            );
-            println!(
-                "   {:>9.3} misses / write ",
-                (stat.accesses - stat.hits) as f64 / num_values as f64
-            );
+        let height = ((set_size + 1) / 2).ilog(node_cap / 2).try_into().unwrap();
+        let mut hits = 0;
+        for _ in 0..num_values {
+            for &base_addr in &roots {
+                let num_elements_until_match =
+                    element_rng.random_range(0..2 * average_found_search_length) as usize;
+                let hit = btree::sim_get::<u64>(
+                    base_addr,
+                    0,
+                    height,
+                    num_elements_until_match,
+                    node_cap,
+                    node_size,
+                    &mut hier,
+                    &mut tree_rng,
+                );
+                hits += hit.is_some() as usize;
+            }
         }
-    };
+        print_stats(num_values * num_trees, Some(hits), hier.stats());
+    }
 
-    if let VEB | All = test {
+    // if let Interleaved | All = datastructure {
+    //     todo!()
+    // }
+}
+
+fn insert_test(
+    datastructure: TreeSpec,
+    num_values: usize,
+    interleaving: Option<usize>,
+    values: impl Fn() -> Box<dyn Iterator<Item = u64>>,
+    cache_spec: impl Iterator<Item = simalloc::CacheSpec> + Clone,
+    also_read: bool,
+) {
+    use TreeSpec::*;
+    let num_trees = interleaving.unwrap_or(1);
+
+    if let VEB | All = datastructure {
+        println!("VEB");
         // println!(
         //     "max height = {}",
         //     num_values.next_power_of_two().trailing_zeros()
         // );
         let sim = Simalloc::new(cache_spec.clone());
         let vals = values();
-        let mut tree = trees_of_small_height::Tree::<u64>::in_sim(sim.clone());
+
+        let mut trees: Vec<_> = (0..num_trees)
+            .map(|_| trees_of_small_height::Tree::<u64>::in_sim(sim.clone()))
+            .collect();
         for val in vals {
-            tree.insert(val);
+            for tree in &mut trees {
+                tree.insert(val);
+            }
         }
 
-        print_stats(&sim);
+        print_stats(num_values * num_trees, None, sim.borrow().stats());
+
+        if also_read {
+            println!("VEB READ");
+            sim.borrow_mut().reset();
+
+            let vals = values();
+            for val in vals {
+                for tree in &trees {
+                    assert_eq!(tree.get(&val), Some(&val));
+                }
+            }
+
+            print_stats(num_values * num_trees, None, sim.borrow().stats());
+        }
+
     }
 
-    if let BTree4k | All = test {
+    if let BTree4k | All = datastructure {
+        println!("B-Tree");
         let sim = Simalloc::new(cache_spec.clone());
         let vals = values();
-        let mut tree = btree::BTree::<u64>::with_node_size_in_sim(1 << 12, sim.clone());
+        let mut trees: Vec<_> = (0..num_trees)
+            .map(|_| btree::BTree::<u64>::with_node_size_in_sim(1 << 12, sim.clone()))
+            .collect();
+
         for val in vals {
-            tree.insert(val);
+            for tree in &mut trees {
+                tree.insert(val);
+            }
         }
-        print_stats(&sim);
+        print_stats(num_values * num_trees, None, sim.borrow().stats());
+
+        if also_read {
+            println!("B-Tree READ");
+            sim.borrow_mut().reset();
+
+            let vals = values();
+            for val in vals {
+                for tree in &trees {
+                    assert_eq!(tree.get(&val), Some(&val));
+                }
+            }
+
+            print_stats(num_values * num_trees, None, sim.borrow().stats());
+        }
     }
 
-    if let Interleaved | All = test {
-        todo!()
+    // if let Interleaved | All = datastructure {
+    //     todo!()
+    // }
+}
+
+fn print_stats(
+    num_values: usize,
+    found: Option<usize>,
+    stats: impl Iterator<Item = simalloc::CacheStats>,
+) {
+    if let Some(found) = found {
+        println!(
+            "   {:>9.2}% found ",
+            (found as f64 / num_values as f64) * 100.0
+        );
+    }
+    for (i, stat) in stats.enumerate() {
+        println!("L{i}: {} x {}", stat.blocksize, stat.num_blocks);
+        println!("   {:>9} accesses", stat.accesses);
+        println!("   {:>9} hits ", stat.hits);
+        println!("   {:>9} misses ", stat.accesses - stat.hits);
+        println!(
+            "  {:>9.2}% hit rate ",
+            ((stat.hits as f64 / stat.accesses as f64) * 100.0)
+        );
+        println!(
+            "   {:>9.3} accesses / op",
+            stat.accesses as f64 / num_values as f64
+        );
+        println!(
+            "   {:>9.3} hits / op ",
+            stat.hits as f64 / num_values as f64
+        );
+        println!(
+            "   {:>9.3} misses / op ",
+            (stat.accesses - stat.hits) as f64 / num_values as f64
+        );
     }
 }
 
 #[derive(Parser, Debug)]
 pub struct Args {
-    /// Cache specifications in format "size:lines,size:lines,..."
-    /// Size can include units like K, KiB, M, MiB, etc.
-    pub caches: CacheSpecs,
+    #[command(subcommand)]
+    test: Test,
+}
 
-    /// Test type to run
-    #[arg(value_enum)]
-    pub test: TestSpec,
+#[derive(Subcommand, Debug)]
+pub enum Test {
+    /// Test gets to the simulated trees with simulated caches.
+    Get {
+        /// Cache specifications in format "size:lines,size:lines,..."
+        /// Size can include units like K, KiB, M, MiB, etc.
+        caches: CacheSpecs,
 
-    pub num_values: usize,
+        /// Data structure to test
+        #[arg(value_enum)]
+        datastructure: TreeSpec,
 
-    #[arg(value_enum)]
-    pub order: TestOrder,
+        num_values: usize,
+
+        interleaving: Option<usize>,
+    },
+
+    /// Test writes to the actual trees with simulated caches.
+    Write {
+        /// Cache specifications in format "size:lines,size:lines,..."
+        /// Size can include units like K, KiB, M, MiB, etc.
+        caches: CacheSpecs,
+
+        /// Data structure to test
+        #[arg(value_enum)]
+        datastructure: TreeSpec,
+
+        num_values: usize,
+
+        #[arg(value_enum)]
+        order: TestOrder,
+
+        interleaving: Option<usize>,
+    },
+
+    WR {
+        /// Cache specifications in format "size:lines,size:lines,..."
+        /// Size can include units like K, KiB, M, MiB, etc.
+        caches: CacheSpecs,
+
+        /// Data structure to test
+        #[arg(value_enum)]
+        datastructure: TreeSpec,
+
+        num_values: usize,
+
+        #[arg(value_enum)]
+        order: TestOrder,
+
+        interleaving: Option<usize>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum TestSpec {
+    Get,
+    Write,
 }
 
 #[derive(Debug, Clone)]
@@ -120,7 +373,7 @@ pub struct CacheSpec {
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
-pub enum TestSpec {
+pub enum TreeSpec {
     VEB,
     BTree4k,
     Interleaved,
@@ -221,13 +474,6 @@ fn parse_size(s: &str) -> Result<usize, String> {
     Ok(num * multiplier)
 }
 
-// Helper method to access the specs vector directly
-impl Args {
-    pub fn cache_specs(&self) -> &Vec<CacheSpec> {
-        &self.caches.specs
-    }
-}
-
 // trait Values: Iterator<Item = u64> {
 //     fn duplicate(&self) -> Box<dyn Values>;
 // }
@@ -237,5 +483,36 @@ impl Args {
 // {
 //     fn duplicate(&self) -> Box<dyn Values> {
 //         Box::new(self.clone())
+//     }
+// }
+
+// trait Tree<T> {
+//     fn do_insert(&mut self, val: T);
+//     fn do_get(&self, val: &T) -> Option<usize>;
+// }
+
+// impl<T> Tree<T> for trees_of_small_height::Tree<T>
+// where
+//     T: Ord + std::fmt::Debug,
+// {
+//     fn do_insert(&mut self, val: T) {
+//         self.insert(val);
+//     }
+
+//     fn do_get(&self, val: &T) -> Option<usize> {
+//         self.get(val).map(|r| (r as *const T).addr())
+//     }
+// }
+
+// impl<T> Tree<T> for btree::BTree<T>
+// where
+//     T: Ord,
+// {
+//     fn do_insert(&mut self, val: T) {
+//         self.insert(val);
+//     }
+
+//     fn do_get(&self, val: &T) -> Option<usize> {
+//         self.get(val).map(|r| (r as *const T).addr())
 //     }
 // }

@@ -1,6 +1,9 @@
 use std::{cell::RefCell, marker::PhantomData, mem::MaybeUninit, ptr::NonNull, rc::Rc};
 
-use sim::simalloc::{SPtr, SRef, SRefMut, SSlice, SSliceMut, Simalloc};
+use sim::{
+    lru_cache::Cache,
+    simalloc::{SPtr, SRef, SRefMut, SSlice, SSliceMut, Simalloc},
+};
 
 pub struct BTree<T> {
     root: Option<NodeBox<T>>,
@@ -66,6 +69,141 @@ pub const fn num_elements_for_node_size<T>(node_size: usize) -> usize {
     //     - size_of::<NodePtr<T>>()
     //     - (align_of::<NodePtr<T>>().saturating_sub(align_of::<T>()))) // TODO better align?
     //     / (size_of::<T>() + size_of::<NodePtr<T>>())
+}
+
+pub fn sim_get<T>(
+    base_addr: usize,
+    depth: u8,
+    height: u8,
+    // center around lg(n) for an even hit rate
+    mut num_elements_until_match: usize,
+    node_cap: usize,
+    page_size: usize,
+    sim: &mut sim::hierarchy::Hierarchy,
+    global_rng: &mut impl rand::Rng,
+) -> Option<usize> {
+    use rand::prelude::*;
+    use rand_pcg::Pcg64Mcg;
+    // println!("{base_addr:#x}");
+
+    let ref_sim = std::cell::RefCell::new(sim);
+
+    let mut node_rng = Pcg64Mcg::seed_from_u64(base_addr as u64);
+    // Can it be smaller and maintain tree invariants?
+    // let num_elements = node_rng.random_range(node_cap / 2..=node_cap);
+    let num_elements = node_cap;
+
+    let idx = global_rng.random_range(0..=num_elements);
+    let gt = global_rng.next_u32() % 2 == 1;
+
+    let sim_entries = |addr| {
+        // self.entries_offset();
+        let entries_offset = size_of::<Header<T>>();
+        // let len = self.header().pin().num_elements;
+        ref_sim.borrow_mut().access_addr(addr, size_of::<u16>());
+        // TODO seed rng based on addr, use real cap
+        let len = num_elements;
+        // self.0
+        //     .byte_add(entries_offset)
+        //     .cast()
+        //     .as_slice(len as usize)
+        (addr + entries_offset, len)
+    };
+
+    let sim_ptrs = |addr| {
+        // let len = self.header().pin().num_elements as usize + 1;
+        ref_sim.borrow_mut().access_addr(addr, size_of::<u16>());
+        let len = num_elements + 1;
+        // let ptr_offset = self.ptrs_offset();
+        //  let max_elements = self.header().pin().max_elements as usize;
+        ref_sim
+            .borrow_mut()
+            .access_addr(addr + size_of::<u16>(), size_of::<u16>());
+        let max_elements = node_cap;
+        let mut offset = size_of::<Header<T>>() + size_of::<T>() * max_elements;
+        if offset % align_of::<NodePtr<T>>() > 0 {
+            offset += align_of::<NodePtr<T>>() - (offset % align_of::<NodePtr<T>>());
+        }
+        // self.0.byte_add(ptr_offset).cast().as_slice(len)
+        (addr + offset, len)
+    };
+
+    let num_elements_until_match = &mut num_elements_until_match;
+    let mut sim_find = |addr| {
+        // let values = self.entries();
+        let (values, mut size) = sim_entries(addr);
+        // return values.binary_search(value);
+        use std::{cmp::Ordering::*, hint};
+        if size == 0 {
+            return Err(0);
+        }
+        let mut base = 0usize;
+
+        while size > 1 {
+            let half = size / 2;
+            let mid = base + half;
+
+            // let cmp = f(&**self.pin_at(mid));
+            ref_sim
+                .borrow_mut()
+                .access_addr(values + size_of::<T>() * mid, size_of::<T>());
+            let cmp = mid.cmp(&idx);
+            if mid != idx {
+                *num_elements_until_match = num_elements_until_match.saturating_sub(1);
+            }
+            base = hint::select_unpredictable(cmp == Greater, base, mid);
+            size -= half;
+        }
+
+        // let cmp = f(&**self.pin_at(base));
+        ref_sim
+            .borrow_mut()
+            .access_addr(values + size_of::<T>() * base, size_of::<T>());
+        let cmp = if *num_elements_until_match == 0 {
+            Equal
+        } else if gt {
+            Greater
+        } else {
+            Less
+        };
+        // num_elements_until_match -= 1;
+        // let cmp = base.cmp(&idx);
+        if cmp == Equal {
+            Ok(base)
+        } else {
+            let result = base + (cmp == Less) as usize;
+            Err(result)
+        }
+    };
+
+    match sim_find(base_addr) {
+        Ok(i) => return Some(sim_entries(base_addr).0 + i * size_of::<T>()),
+        Err(i) => {
+            // let next = self.ptrs().into_value_at(i);
+            let (next, _) = sim_ptrs(base_addr);
+            ref_sim
+                .borrow_mut()
+                .access_addr(next + i * size_of::<NodePtr<T>>(), size_of::<NodePtr<T>>());
+            // let Some(node) = &*next else { return None };
+            if depth + 1 >= height {
+                return None;
+            }
+            // node.get(value)
+            node_rng.advance(i as _);
+            let next_addr =
+                node_rng.random_range(0..1 << (64 - 1 - page_size.ilog2())) << page_size.ilog2();
+            sim_get::<T>(
+                next_addr,
+                depth + 1,
+                height,
+                *num_elements_until_match,
+                node_cap,
+                page_size,
+                ref_sim.into_inner(),
+                global_rng,
+            )
+        }
+    }
 }
 
 impl<T> BTree<T> {
