@@ -91,6 +91,10 @@ impl<K: Debug + Ord> Tree<K> {
         }
     }
 
+    pub fn num_bytes(&self) -> usize {
+        std::mem::size_of_val::<[Option<(usize, K)>]>(self.tree.slice(..).into_inner())
+    }
+
     #[allow(dead_code)]
     pub fn cap(&self) -> usize {
         self.tree.slice(..).len()

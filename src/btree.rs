@@ -211,6 +211,7 @@ impl<T> BTree<T> {
         let num_elems = num_elements_for_node_size::<T>(size);
         assert!(node_size_for_num_elements::<T>(num_elems) <= size);
         assert!(num_elems <= u16::MAX as usize);
+        println!("cap: {size} {num_elems}");
         Self::with_node_capacity_in_sim(num_elems as u16, sim)
     }
 
@@ -610,85 +611,85 @@ impl<T> Drop for NodeBox<T> {
     }
 }
 
-// impl<T: std::fmt::Debug> BTree<T> {
-//   pub fn output_dot(&self) -> String {
-//     const TABLE_START: &str = "<TABLE BORDER=\"0\" CELLBORDER=\"1\" CELLSPACING=\"0\">";
-//     const TABLE_END: &str = "</TABLE>";
+impl<T: std::fmt::Debug> BTree<T> {
+    pub fn output_dot(&self) -> String {
+        const TABLE_START: &str = "<TABLE BORDER=\"0\" CELLBORDER=\"1\" CELLSPACING=\"0\">";
+        const TABLE_END: &str = "</TABLE>";
 
-//     use std::fmt::Write;
+        use std::fmt::Write;
 
-//     let mut out = String::new();
-//     writeln!(
-//       out,
-//       "digraph {{\n  \
-//             node [shape=plaintext];\n  \
-//             rankdir=\"TB\";\n  \
-//             ranksep=\"0.02\";\n  \
-//             splines=polyline;\n"
-//     )
-//     .unwrap();
+        let mut out = String::new();
+        writeln!(
+            out,
+            "digraph {{\n  \
+            node [shape=plaintext];\n  \
+            rankdir=\"TB\";\n  \
+            ranksep=\"0.02\";\n  \
+            splines=polyline;\n"
+        )
+        .unwrap();
 
-//     let mut edges = String::new();
+        let mut edges = String::new();
 
-//     // let mut num_nodes = 1;
-//     // let mut start = 0;
-//     let mut h = 0;
-//     // for h in 0..self.height {
-//     let mut queue = std::collections::VecDeque::new();
-//     let mut next = std::collections::VecDeque::new();
-//     if let Some(root) = &self.root {
-//       queue.push_back(root);
-//     }
-//     while !queue.is_empty() {
-//       // let mut c = 0;
-//       for current in queue.drain(..) {
-//         let ptr = current.header() as *const _;
-//         writeln!(
-//           out,
-//           "n{ptr:?} [group=\"h{h}\",label=<\n\
-//               <TABLE BORDER=\"0\" CELLBORDER=\"1\" CELLSPACING=\"0\">"
-//         )
-//         .unwrap();
-//         writeln!(out, "    <TR><TD>").unwrap();
-//         for (i, v) in current.entries().iter().enumerate() {
-//           if i == 0 {
-//             writeln!(out, "      {TABLE_START}\n        <TR>").unwrap();
-//           }
-//           writeln!(out, "          <TD PORT=\"p{i}\">{v:?}</TD>").unwrap();
-//         }
-//         writeln!(
-//           out,
-//           "          <TD PORT=\"p{}\"></TD>",
-//           current.entries().len()
-//         )
-//         .unwrap();
-//         writeln!(out, "        </TR>\n      {TABLE_END}").unwrap();
-//         for (i, child) in current.ptrs().iter().enumerate() {
-//           let Some(child) = child else {
-//             continue;
-//           };
-//           next.push_back(child);
-//           writeln!(
-//             edges,
-//             "  n{ptr:?}:p{i}:s -> n{child:?}:n [weight=0.01]",
-//             child = child.header() as *const _
-//           )
-//           .unwrap();
-//         }
-//         writeln!(out, "    </TD></TR>\n  {TABLE_END}\n>]\n").unwrap();
-//         // c += 1;
-//       }
-//       std::mem::swap(&mut queue, &mut next);
-//       h += 1;
-//     }
+        // let mut num_nodes = 1;
+        // let mut start = 0;
+        let mut h = 0;
+        // for h in 0..self.height {
+        let mut queue = std::collections::VecDeque::new();
+        let mut next = std::collections::VecDeque::new();
+        if let Some(root) = &self.root {
+            queue.push_back(root);
+        }
+        while !queue.is_empty() {
+            // let mut c = 0;
+            for current in queue.drain(..) {
+                let ptr = current.header().into_ptr();
+                writeln!(
+                    out,
+                    "n{ptr:?} [group=\"h{h}\",label=<\n\
+              <TABLE BORDER=\"0\" CELLBORDER=\"1\" CELLSPACING=\"0\">"
+                )
+                .unwrap();
+                writeln!(out, "    <TR><TD>").unwrap();
+                for (i, v) in current.entries().into_inner().iter().enumerate() {
+                    if i == 0 {
+                        writeln!(out, "      {TABLE_START}\n        <TR>").unwrap();
+                    }
+                    writeln!(out, "          <TD PORT=\"p{i}\">{v:?}</TD>").unwrap();
+                }
+                writeln!(
+                    out,
+                    "          <TD PORT=\"p{}\"></TD>",
+                    current.entries().len()
+                )
+                .unwrap();
+                writeln!(out, "        </TR>\n      {TABLE_END}").unwrap();
+                for (i, child) in current.ptrs().into_inner().iter().enumerate() {
+                    let Some(child) = child else {
+                        continue;
+                    };
+                    next.push_back(child);
+                    writeln!(
+                        edges,
+                        "  n{ptr:?}:p{i}:s -> n{child:?}:n [weight=0.01]",
+                        child = child.header().into_ptr()
+                    )
+                    .unwrap();
+                }
+                writeln!(out, "    </TD></TR>\n  {TABLE_END}\n>]\n").unwrap();
+                // c += 1;
+            }
+            std::mem::swap(&mut queue, &mut next);
+            h += 1;
+        }
 
-//     out.push_str(&edges);
+        out.push_str(&edges);
 
-//     writeln!(out, "}}").unwrap();
+        writeln!(out, "}}").unwrap();
 
-//     out
-//   }
-// }
+        out
+    }
+}
 
 // #[cfg(test)]
 // mod test {

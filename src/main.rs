@@ -28,7 +28,7 @@ fn main() {
             let cache_spec = caches.specs.iter().map(|s| simalloc::CacheSpec {
                 num_blocks: s.num_lines,
                 block_size: s.line_size,
-                inclusive: true,
+                inclusive: s.inclusive,
             });
             get_test(datastructure, num_values, interleaving, cache_spec)
         }
@@ -55,9 +55,16 @@ fn main() {
             let cache_spec = caches.specs.iter().map(|s| simalloc::CacheSpec {
                 num_blocks: s.num_lines,
                 block_size: s.line_size,
-                inclusive: true,
+                inclusive: s.inclusive,
             });
-            insert_test(datastructure, num_values, interleaving, values, cache_spec, false)
+            insert_test(
+                datastructure,
+                num_values,
+                interleaving,
+                values,
+                cache_spec,
+                false,
+            )
         }
         Test::WR {
             caches,
@@ -82,9 +89,16 @@ fn main() {
             let cache_spec = caches.specs.iter().map(|s| simalloc::CacheSpec {
                 num_blocks: s.num_lines,
                 block_size: s.line_size,
-                inclusive: true,
+                inclusive: s.inclusive,
             });
-            insert_test(datastructure, num_values, interleaving, values, cache_spec, true)
+            insert_test(
+                datastructure,
+                num_values,
+                interleaving,
+                values,
+                cache_spec,
+                true,
+            )
         }
     }
 }
@@ -146,6 +160,7 @@ fn get_test(
         let mut tree_rng = tree_rng.clone();
         let node_size = 1 << 12;
         let node_cap = btree::num_elements_for_node_size::<u64>(node_size);
+        println!("cap: {node_cap}");
         let roots: Vec<_> = (0..num_trees)
             .map(|_| {
                 tree_rng.random_range(0..1 << (64 - 1 - node_size.ilog2())) << node_size.ilog2()
@@ -208,6 +223,7 @@ fn insert_test(
             }
         }
 
+        println!("{}B", trees[0].num_bytes());
         print_stats(num_values * num_trees, None, sim.borrow().stats());
 
         if also_read {
@@ -223,7 +239,6 @@ fn insert_test(
 
             print_stats(num_values * num_trees, None, sim.borrow().stats());
         }
-
     }
 
     if let BTree4k | All = datastructure {
@@ -248,7 +263,7 @@ fn insert_test(
             let vals = values();
             for val in vals {
                 for tree in &trees {
-                    assert_eq!(tree.get(&val), Some(&val));
+                    assert_eq!(tree.get(&val), Some(&val), "{}", tree.output_dot());
                 }
             }
 
@@ -273,7 +288,12 @@ fn print_stats(
         );
     }
     for (i, stat) in stats.enumerate() {
-        println!("L{i}: {} x {}", stat.blocksize, stat.num_blocks);
+        println!(
+            "L{i}: {}B x {}{}",
+            stat.blocksize,
+            stat.num_blocks,
+            if stat.inclusive { "" } else { " *" }
+        );
         println!("   {:>9} accesses", stat.accesses);
         println!("   {:>9} hits ", stat.hits);
         println!("   {:>9} misses ", stat.accesses - stat.hits);
@@ -370,6 +390,7 @@ pub struct CacheSpecs {
 pub struct CacheSpec {
     pub line_size: usize,
     pub num_lines: usize,
+    pub inclusive: bool,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -406,7 +427,12 @@ impl FromStr for CacheSpecs {
 impl FromStr for CacheSpec {
     type Err = String;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
+    fn from_str(mut s: &str) -> Result<Self, Self::Err> {
+        let mut inclusive = true;
+        if let Some(t) = s.strip_suffix("n") {
+            s = t;
+            inclusive = false;
+        }
         let parts: Vec<&str> = s.split(':').collect();
         if parts.len() != 2 {
             return Err(format!(
@@ -424,6 +450,7 @@ impl FromStr for CacheSpec {
         Ok(CacheSpec {
             line_size,
             num_lines,
+            inclusive,
         })
     }
 }
