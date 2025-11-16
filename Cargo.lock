@@ -498,7 +498,6 @@ version = "0.1.0"
 dependencies = [
  "hashbrown",
  "intrusive-collections",
- "tracing_ptr",
 ]
 
 [[package]]
@@ -530,10 +529,6 @@ dependencies = [
  "rustix",
  "windows-sys 0.59.0",
 ]
-
-[[package]]
-name = "tracing_ptr"
-version = "0.1.0"
 
 [[package]]
 name = "unarray"
