@@ -19,7 +19,7 @@ fn main() {
     let Args { test } = Args::parse();
 
     match test {
-        Test::Get {
+        Test::ReadWoData {
             caches,
             datastructure,
             num_values,
@@ -64,7 +64,7 @@ fn main() {
                 false,
             )
         }
-        Test::WR {
+        Test::WriteRead {
             caches,
             datastructure,
             num_values,
@@ -352,7 +352,7 @@ pub struct Args {
 #[derive(Subcommand, Debug)]
 pub enum Test {
     /// Test gets to the simulated trees with simulated caches.
-    Get {
+    ReadWoData {
         /// Cache specifications in format "size:lines,size:lines,..."
         /// Size can include units like K, KiB, M, MiB, etc.
         caches: CacheSpecs,
@@ -385,7 +385,8 @@ pub enum Test {
         datastructure: Vec<TreeSpec>,
     },
 
-    WR {
+    /// Test writes and reads to the actual trees with simulated caches.
+    WriteRead {
         /// Cache specifications in format "size:lines,size:lines,..."
         /// Size can include units like K, KiB, M, MiB, etc.
         caches: CacheSpecs,
